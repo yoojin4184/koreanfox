@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>어휘여우 🦊 국어 어휘 학습</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#B7E4C7">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="어휘여우">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap" rel="stylesheet">
@@ -69,6 +76,30 @@
     font-weight:600;
     box-shadow:var(--shadow);
     color:var(--coral-dark);
+  }
+  .exit-btn{
+    background:var(--white);
+    border:2px solid #F0D9D3;
+    color:var(--coral-dark);
+    border-radius:999px;
+    padding:6px 12px;
+    font-size:12px;
+    font-weight:700;
+    cursor:pointer;
+    font-family:'Gowun Dodum', sans-serif;
+  }
+  .exit-btn:active{transform:translateY(1px);}
+  .reset-link{
+    display:block;
+    text-align:center;
+    font-size:12px;
+    color:var(--ink-soft);
+    text-decoration:underline;
+    margin-top:12px;
+    cursor:pointer;
+    background:none;
+    border:none;
+    width:100%;
   }
   .card{
     background:var(--white);
@@ -494,6 +525,7 @@ function defaultState(){
     history:[],        // [{date, correct, total}]
     streak:0,
     lastDate:null,
+    lastSessionDate:null,
     todaySession:null
   };
 }
@@ -535,10 +567,12 @@ function makeQuestion(wordObj, type, correctPos){
   };
 }
 
-function pickWordsForToday(state, today){
+function pickWordsForToday(state, today, excludeSet){
+  excludeSet = excludeSet || new Set();
   const dueWords = [];
   const newCandidates = [];
   for(const w of WORDS){
+    if(excludeSet.has(w.w)) continue;
     const p = state.progress[w.w];
     if(!p){
       newCandidates.push(w);
@@ -553,25 +587,47 @@ function pickWordsForToday(state, today){
   }
   if(selected.length < DAILY_GOAL){
     // 새 단어도 부족하면 마스터한 단어라도 복습용으로 채움
-    const rest = WORDS.filter(w => !selected.find(s=>s.w===w.w));
+    const rest = WORDS.filter(w => !excludeSet.has(w.w) && !selected.find(s=>s.w===w.w));
     selected = selected.concat(shuffle(rest).slice(0, DAILY_GOAL-selected.length));
   }
   return selected.slice(0, DAILY_GOAL);
 }
 
+function computeCatchupDates(state, today, maxDays){
+  maxDays = maxDays || 3;
+  if(!state.lastSessionDate || state.lastSessionDate >= today) return [today];
+  let d = addDays(state.lastSessionDate, 1);
+  let dates = [];
+  while(d < today){ dates.push(d); d = addDays(d,1); }
+  dates.push(today);
+  if(dates.length > maxDays) dates = dates.slice(dates.length - maxDays);
+  return dates;
+}
+
 function generateSession(state){
   const today = todayStr();
-  const words = pickWordsForToday(state, today);
-  const questions = words.map((w,i)=>{
+  const dates = computeCatchupDates(state, today);
+  const usedWords = new Set();
+  const dayGroups = dates.map(d=>{
+    const picked = pickWordsForToday(state, today, usedWords);
+    picked.forEach(w=>usedWords.add(w.w));
+    return {date:d, words:picked};
+  });
+  state.lastSessionDate = today;
+  const studyItems = [];
+  dayGroups.forEach(g => g.words.forEach(w => studyItems.push({word:w.w, date:g.date})));
+  const allWords = dayGroups.flatMap(g=>g.words);
+  const questions = allWords.map((w,i)=>{
     const type = i%2===0 ? 'w2m' : 'm2w';
     const correctPos = i%4;
     return makeQuestion(w, type, correctPos);
   });
   return {
     questions: shuffle(questions),
-    studyWords: words.map(w=>w.w),
+    studyItems,
     studyIndex: 0,
     phase: 'study',
+    dayCount: dates.length,
     index:0,
     correctCount:0,
     wrongList:[],
@@ -644,16 +700,41 @@ function learningCount(){
   return Object.values(STATE.progress).filter(p=>p.status==='review7'||p.status==='review30').length;
 }
 
-function topbar(activeStreak){
+function topbar(activeStreak, showExit){
   return `
   <div class="topbar">
     <div class="logo"><span class="fox">🦊</span><span>어휘여우</span></div>
-    <div class="streak-chip">🔥 ${activeStreak||0}일 연속</div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      ${showExit ? `<button class="exit-btn" id="btnExit">✕ 나가기</button>` : ''}
+      <div class="streak-chip">🔥 ${activeStreak||0}일 연속</div>
+    </div>
   </div>`;
+}
+
+function wireExitButton(){
+  const btn = document.getElementById('btnExit');
+  if(btn) btn.onclick = ()=>{
+    saveState(STATE);
+    renderHome();
+  };
+}
+
+function resetTodaySession(){
+  const ok = confirm('오늘 진행 중이던 학습을 처음부터 다시 시작할까요?\n(이미 정답 처리되어 저장된 단어의 학습 기록은 그대로 유지돼요)');
+  if(ok){
+    STATE.todaySession = null;
+    saveState(STATE);
+    renderHome();
+  }
 }
 
 function renderHome(){
   const today = todayStr();
+  // 예전 버전에서 저장된 손상된 세션(신규 필드 없음) 자동 복구
+  if(STATE.todaySession && STATE.todaySession.phase === 'study' && !Array.isArray(STATE.todaySession.studyItems)){
+    STATE.todaySession = null;
+    saveState(STATE);
+  }
   const sess = STATE.todaySession;
   const hasUnfinishedToday = sess && !sess.finished;
   const finishedToday = sess && sess.finished && STATE.history.find(h=>h.date===today);
@@ -661,14 +742,16 @@ function renderHome(){
   const mastered = masteredCount();
   const learning = learningCount();
   const wbCount = wrongBookWords().length;
+  const showResetLink = hasUnfinishedToday || finishedToday;
 
   let heroInner = '';
   if(hasUnfinishedToday){
     if(sess.phase === 'study'){
+      const catchupNote = sess.dayCount>1 ? `<br><span style="color:var(--coral-dark);">밀린 ${sess.dayCount-1}일치를 포함해서 준비했어요!</span>` : '';
       heroInner = `
         <span class="hero-fox">📖</span>
         <div class="hero-title">단어카드 보던 중이에요!</div>
-        <p class="hero-sub">${sess.studyIndex} / ${sess.studyWords.length}장 봤어요. 이어서 볼까요?</p>
+        <p class="hero-sub">${sess.studyIndex} / ${sess.studyItems.length}장 봤어요. 이어서 볼까요?${catchupNote}</p>
         <button class="btn btn-primary" id="btnContinue">단어카드 이어보기 📖</button>
       `;
     }else{
@@ -696,6 +779,9 @@ function renderHome(){
       <p class="hero-sub">단어카드로 먼저 익히고, ${DAILY_GOAL}문제로 확인해요</p>
       <button class="btn btn-primary" id="btnStart">단어카드 보러 가기 📖</button>
     `;
+  }
+  if(showResetLink){
+    heroInner += `<button class="reset-link" id="btnResetToday">⟳ 오늘 학습 처음부터 다시 시작</button>`;
   }
 
   app.innerHTML = `
@@ -743,6 +829,8 @@ function renderHome(){
     if(STATE.todaySession.phase === 'study') renderStudy();
     else renderQuiz();
   };
+  const btnResetToday = document.getElementById('btnResetToday');
+  if(btnResetToday) btnResetToday.onclick = resetTodaySession;
   const btnRetry = document.getElementById('btnRetryWrong');
   if(btnRetry) btnRetry.onclick = ()=>{
     STATE.todaySession.retryActive = true;
@@ -776,23 +864,28 @@ function renderHistory(){
 function renderStudy(){
   const sess = STATE.todaySession;
   const idx = sess.studyIndex;
-  if(idx >= sess.studyWords.length){
+  if(idx >= sess.studyItems.length){
     sess.phase = 'quiz';
     saveState(STATE);
     return renderQuiz();
   }
-  const wordObj = wordByText(sess.studyWords[idx]);
-  const pct = Math.round((idx/sess.studyWords.length)*100);
-  const isLast = idx === sess.studyWords.length - 1;
+  const today = todayStr();
+  const item = sess.studyItems[idx];
+  const wordObj = wordByText(item.word);
+  const pct = Math.round((idx/sess.studyItems.length)*100);
+  const isLast = idx === sess.studyItems.length - 1;
+  const dateLabel = item.date === today
+    ? `📅 ${item.date.slice(5).replace('-','.')} · 오늘 학습`
+    : `📅 ${item.date.slice(5).replace('-','.')} · 밀린 학습`;
 
   app.innerHTML = `
-    ${topbar(STATE.streak)}
+    ${topbar(STATE.streak, true)}
     <div class="progress-wrap">
       <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
-      <div class="progress-count">${idx+1} / ${sess.studyWords.length}</div>
+      <div class="progress-count">${idx+1} / ${sess.studyItems.length}</div>
     </div>
     <div class="flash-card">
-      <div class="flash-progress">📖 단어카드로 먼저 익혀요</div>
+      <div class="flash-progress">${dateLabel}</div>
       <span class="flash-level-tag">${LEVEL_LABEL[wordObj.lv]}</span>
       <div class="flash-word">${wordObj.w}</div>
       <div class="flash-meaning">
@@ -807,6 +900,7 @@ function renderStudy(){
     </div>
   `;
 
+  wireExitButton();
   document.getElementById('btnCardNext').onclick = ()=>{
     sess.studyIndex++;
     saveState(STATE);
@@ -866,7 +960,7 @@ function renderWrongQuiz(){
     ? `<span class="q-type-badge badge-w2m">💡 이 단어의 뜻은?</span>`
     : `<span class="q-type-badge badge-m2w">🔍 이 뜻을 가진 단어는?</span>`;
   app.innerHTML = `
-    ${topbar(STATE.streak)}
+    ${topbar(STATE.streak, true)}
     <div class="card">
       <div class="section-title">📕 오답 노트 다시 풀기 (${wq.index+1}/${wq.questions.length})</div>
       ${typeBadge}
@@ -884,6 +978,7 @@ function renderWrongQuiz(){
       </div>
     </div>
   `;
+  wireExitButton();
   document.querySelectorAll('#optionsWrap .option').forEach(btn=>{
     btn.onclick = ()=>{
       if(q.answered) return;
@@ -929,7 +1024,7 @@ function renderQuiz(){
     : `<span class="q-type-badge badge-m2w">🔍 이 뜻을 가진 단어는?</span>`;
 
   app.innerHTML = `
-    ${topbar(STATE.streak)}
+    ${topbar(STATE.streak, true)}
     <div class="progress-wrap">
       <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
       <div class="progress-count">${doneCount+1} / ${sess.questions.length}</div>
@@ -951,6 +1046,7 @@ function renderQuiz(){
     </div>
   `;
 
+  wireExitButton();
   document.querySelectorAll('#optionsWrap .option').forEach(btn=>{
     btn.onclick = ()=> handleAnswer(parseInt(btn.dataset.idx,10));
   });
@@ -1079,7 +1175,7 @@ function renderRetry(){
     : `<span class="q-type-badge badge-m2w">🔍 이 뜻을 가진 단어는?</span>`;
 
   app.innerHTML = `
-    ${topbar(STATE.streak)}
+    ${topbar(STATE.streak, true)}
     <div class="card">
       <div class="section-title">🔁 오답 다시 풀기 (${sess.retryIndex+1}/${rq.length})</div>
       ${typeBadge}
@@ -1097,6 +1193,7 @@ function renderRetry(){
       </div>
     </div>
   `;
+  wireExitButton();
   document.querySelectorAll('#optionsWrap .option').forEach(btn=>{
     btn.onclick = ()=>{
       if(q.answered) return;
@@ -1162,6 +1259,13 @@ function renderRetryDone(){
   }
   renderHome();
 })();
+</script>
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    navigator.serviceWorker.register('service-worker.js').catch(()=>{});
+  });
+}
 </script>
 </body>
 </html>
