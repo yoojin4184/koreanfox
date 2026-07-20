@@ -561,24 +561,31 @@ function randomCode(len){
   return s;
 }
 
+function withTimeout(promise, ms){
+  return Promise.race([
+    promise,
+    new Promise((_, reject)=> setTimeout(()=> reject(new Error('timeout')), ms))
+  ]);
+}
+
 async function cloudDocExists(code){
   if(!FIREBASE_READY) return false;
   try{
-    const doc = await db.collection('students').doc(code).get();
+    const doc = await withTimeout(db.collection('students').doc(code).get(), 7000);
     return doc.exists;
-  }catch(e){ return false; }
+  }catch(e){ console.warn('cloudDocExists 실패', e); return false; }
 }
 async function cloudFetch(code){
   if(!FIREBASE_READY) return null;
   try{
-    const doc = await db.collection('students').doc(code).get();
+    const doc = await withTimeout(db.collection('students').doc(code).get(), 7000);
     return doc.exists ? doc.data() : null;
-  }catch(e){ return null; }
+  }catch(e){ console.warn('cloudFetch 실패', e); return null; }
 }
 async function cloudPush(code, state){
   if(!FIREBASE_READY || !code) return;
   try{
-    await db.collection('students').doc(code).set(state);
+    await withTimeout(db.collection('students').doc(code).set(state), 7000);
   }catch(e){ console.warn('클라우드 동기화 실패', e); }
 }
 
@@ -860,14 +867,20 @@ function renderSyncGate(){
   if(btnNewCode) btnNewCode.onclick = async ()=>{
     btnNewCode.textContent = '만드는 중...';
     btnNewCode.disabled = true;
-    let code = randomCode(6);
-    if(FIREBASE_READY){
-      let tries = 0;
-      while(await cloudDocExists(code) && tries < 5){ code = randomCode(6); tries++; }
-      await cloudPush(code, STATE);
+    try{
+      let code = randomCode(6);
+      if(FIREBASE_READY){
+        const exists = await cloudDocExists(code);
+        if(exists) code = randomCode(6) + randomCode(2); // 극히 드문 충돌 시 코드 길이 늘려 회피
+        await cloudPush(code, STATE);
+      }
+      setSyncCode(code);
+      renderHome();
+    }catch(e){
+      console.error('코드 생성 실패', e);
+      btnNewCode.textContent = '오류가 발생했어요. 다시 시도 ↻';
+      btnNewCode.disabled = false;
     }
-    setSyncCode(code);
-    renderHome();
   };
 
   const btnJoinCode = document.getElementById('btnJoinCode');
